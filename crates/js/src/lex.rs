@@ -223,6 +223,11 @@ pub fn unescape(s: &str) -> String {
                 }
             }
             Some('\n') => {}
+            Some('\r') => {
+                if it.peek() == Some(&'\n') {
+                    it.next();
+                }
+            }
             Some(other) => out.push(other),
             None => {}
         }
@@ -327,6 +332,13 @@ mod tests {
         let k = kinds("x = 'a\\\r\nb';");
         assert!(k.contains(&(TokKind::Str, "'a\\\r\nb'".into())), "{k:?}");
         assert!(k.contains(&(TokKind::Punct, ";".into())), "{k:?}");
+    }
+
+    #[test]
+    fn unescape_crlf_line_continuation() {
+        assert_eq!(unescape("a\\\r\nb"), "ab");
+        assert_eq!(unescape("a\\\rb"), "ab");
+        assert_eq!(unescape("a\\\nb"), "ab");
     }
 
     #[test]
