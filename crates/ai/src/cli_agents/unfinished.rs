@@ -229,11 +229,17 @@ mod tests {
         let (a, asked) = adapters(true);
         // Dropped without `done`: its lock goes, as when the process ends.
         drop(Held::record(d.path(), &Entry::new("test-sweep", "agent-cli", None, "ses_stuck")).unwrap());
-        for _ in 1..TRIES {
-            assert!(sweep(d.path(), &a).is_empty());
+        // A sweep can find the record still locked: a program another test starts holds a copy of
+        // this process's open files until it runs, and that sweep counts no try. So sweep until it
+        // gives up, and count the tries it asked for.
+        let mut said = Vec::new();
+        for _ in 0..100 {
+            said = sweep(d.path(), &a);
+            if !said.is_empty() {
+                break;
+            }
             assert_eq!(records(d.path()), 1, "kept for the next sweep");
         }
-        let said = sweep(d.path(), &a);
         assert!(said.len() == 1 && said[0].contains("ses_stuck") && said[0].contains("Do it by hand."), "{said:?}");
         assert_eq!(records(d.path()), 0);
         assert_eq!(asked.lock().unwrap_or_else(PoisonError::into_inner).len(), TRIES as usize);
