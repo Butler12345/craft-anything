@@ -204,6 +204,9 @@ pub fn unescape(s: &str) -> String {
             Some('n') => out.push('\n'),
             Some('t') => out.push('\t'),
             Some('r') => out.push('\r'),
+            Some('b') => out.push('\u{8}'),
+            Some('f') => out.push('\u{c}'),
+            Some('v') => out.push('\u{b}'),
             Some('0') => out.push('\0'),
             Some('x') => {
                 let h: String = it.by_ref().take(2).collect();
@@ -339,6 +342,12 @@ mod tests {
         assert_eq!(unescape("a\\\r\nb"), "ab");
         assert_eq!(unescape("a\\\rb"), "ab");
         assert_eq!(unescape("a\\\nb"), "ab");
+    }
+
+    #[test]
+    fn unescape_backspace_formfeed_vtab() {
+        assert_eq!(unescape(r"a\fb\vc\bd"), "a\u{c}b\u{b}c\u{8}d");
+        assert_eq!(string_value(r#""\b\f\v""#), "\u{8}\u{c}\u{b}");
     }
 
     #[test]
