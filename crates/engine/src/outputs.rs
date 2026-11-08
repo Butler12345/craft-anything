@@ -210,39 +210,6 @@ pub fn packaged_program(dir: &Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-#[cfg(test)]
-mod launch_tests {
-    use super::*;
-
-    /// The child runs inside the project, so an app path passed to it must survive that cwd change.
-    #[test]
-    fn godot_and_electron_receive_the_full_project_path() {
-        let cwd = std::env::current_dir().unwrap();
-        let dir = tempfile::tempdir_in(&cwd).unwrap();
-        let relative = dir.path().strip_prefix(&cwd).unwrap();
-        let root = dir.path().display().to_string();
-        let marker = relative.join("project.godot");
-        std::fs::write(&marker, "").unwrap();
-        let godot = Path::new("godot");
-        assert_eq!(launch(relative, Some(godot)), Some((godot.into(), vec!["--path".into(), root.clone()])));
-        std::fs::remove_file(marker).unwrap();
-
-        std::fs::write(relative.join("package.json"), r#"{"devDependencies":{"electron":"1"}}"#).unwrap();
-        let dist = relative.join("node_modules/electron/dist");
-        let executable = if cfg!(windows) {
-            "electron.exe"
-        } else if cfg!(target_os = "macos") {
-            "Electron.app/Contents/MacOS/Electron"
-        } else {
-            "electron"
-        };
-        let binary = dist.join(executable);
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::write(&binary, "").unwrap();
-        assert_eq!(launch(relative, None), Some((cwd.join(binary), vec![root])));
-    }
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::packaged_program;
@@ -276,4 +243,37 @@ pub fn is_program(p: &Path) -> bool {
 pub fn is_program(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.extension().is_none() && p.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    /// The child runs inside the project, so an app path passed to it must survive that cwd change.
+    #[test]
+    fn godot_and_electron_receive_the_full_project_path() {
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let relative = dir.path().strip_prefix(&cwd).unwrap();
+        let root = dir.path().display().to_string();
+        let marker = relative.join("project.godot");
+        std::fs::write(&marker, "").unwrap();
+        let godot = Path::new("godot");
+        assert_eq!(launch(relative, Some(godot)), Some((godot.into(), vec!["--path".into(), root.clone()])));
+        std::fs::remove_file(marker).unwrap();
+
+        std::fs::write(relative.join("package.json"), r#"{"devDependencies":{"electron":"1"}}"#).unwrap();
+        let dist = relative.join("node_modules/electron/dist");
+        let executable = if cfg!(windows) {
+            "electron.exe"
+        } else if cfg!(target_os = "macos") {
+            "Electron.app/Contents/MacOS/Electron"
+        } else {
+            "electron"
+        };
+        let binary = dist.join(executable);
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, "").unwrap();
+        assert_eq!(launch(relative, None), Some((cwd.join(binary), vec![root])));
+    }
 }
