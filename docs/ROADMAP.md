@@ -1058,6 +1058,7 @@ Gaps found while using the app for real projects.
 - [ ] A check starts the app in front, with focus, on the main monitor, in the way of whatever the
       person is doing. Start it behind other windows without taking focus (it's still pictured);
       Play keeps opening it in front
+      — claimed: tanish2k09, branch feature/r2.9-check-window-behind
 - [x] Keep New project's content column fixed while the vertical scrollbar animates in or out,
       hiding it when there is nothing to scroll, so switching tabs never shifts the page horizontally
       — claimed: Codex, branch bugfix/r2.9-home-scrollbar-gutter
