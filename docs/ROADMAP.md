@@ -1055,10 +1055,16 @@ Gaps found while using the app for real projects.
       builder's own rebuild_check, then the check after its turn). Keep a check whose round all
       worked while the app's files and what it's compared with are unchanged
       — claimed: tanish2k09, branch feature/r2.9-reuse-unchanged-check
-- [ ] A check starts the app in front, with focus, on the main monitor, in the way of whatever the
-      person is doing. Start it behind other windows without taking focus (it's still pictured);
-      Play keeps opening it in front
-      — claimed: tanish2k09, branch feature/r2.9-check-window-behind
+- [x] A check starts the app in front, with focus, on the main monitor, in the way of whatever the
+      person is doing. The `--screenshot` contract now asks for the window behind other windows,
+      without focus (egui's `with_active(false)` and `AlwaysOnBottom`, which winit shows on Windows
+      with `SW_SHOWNOACTIVATE` at `HWND_BOTTOM`); Play still opens it in front. It's the builder's
+      to do, so a build made before reads it only in a new brief, and nothing checks it was done.
+      Not run live — claimed: tanish2k09, branch feature/r2.9-check-window-behind
+- [ ] A runtime study's check also starts the build normally (`native_window_capture`) to picture
+      it beside the original, and that start still comes up in front with focus. Starting a program
+      without focus needs `STARTUPINFO`'s show mode, which std has only unstable
+      (`CommandExt::show_window`, rust-lang/rust#127544), or a safe window crate to send it back
 - [x] Keep New project's content column fixed while the vertical scrollbar animates in or out,
       hiding it when there is nothing to scroll, so switching tabs never shifts the page horizontally
       — claimed: Codex, branch bugfix/r2.9-home-scrollbar-gutter
