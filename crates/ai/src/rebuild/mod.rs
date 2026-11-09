@@ -740,11 +740,22 @@ impl Worker {
     /// is held by the first until the statement ends, and the second then waits forever. A saved
     /// Claude `--resume` that would continue the project's Deep session in Clean room is refused.
     fn agent_spec(&self, ws: &Workspace, entry: &crate::BackendEntry, opts: &RunOptions) -> Result<CliSpec, ToolError> {
-        let (deep, config_dir, targets) = {
+        let (deep, config_dir, mut targets) = {
             let session = self.engine.session();
             (!session.clean_room(), session.config_dir(), session.shared_targets())
         };
         refuse_deep_session_reuse_in_clean_room(ws, &entry.config.model, &entry.options.args, deep)?;
+        // Each request starts a new run whose tools have nothing open: in Deep mode, hand them the
+        // project's own program, so the builder doesn't find "Nothing is open yet" (#1421).
+        if deep
+            && targets.is_empty()
+            && let TargetRef::Local { path } = &ws.manifest.target
+        {
+            match craft_anything_engine::target::Target::load(path) {
+                Ok(target) => targets.push(craft_anything_engine::target::TargetContext::from_target(&target)),
+                Err(e) => log::info!("the builder's tools start without the project's program open: {}", e.message),
+            }
+        }
         Ok(CliSpec {
             builder: Some(Builder { investigation: Some(ws.investigation_dir()), inbox: ws.inbox_dir() }),
             deep,

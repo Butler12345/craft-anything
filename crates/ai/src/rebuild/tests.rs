@@ -2363,6 +2363,36 @@ mod picking_up_a_build {
         assert!(deep.agent_spec(&ws, &entry, &RunOptions::default()).is_ok(), "a Deep run may resume its session");
     }
 
+    /// #1421: a later request's run has nothing open, so in Deep mode the builder's tools are handed
+    /// the project's own program; Clean room and a project without a program hand nothing.
+    #[test]
+    fn a_deep_builder_starts_with_the_projects_program_open() {
+        let d = tempfile::tempdir().unwrap();
+        let program = d.path().join("game.exe");
+        std::fs::write(&program, b"MZ stand-in, never run").unwrap();
+        let ws = Workspace::create(d.path(), "x", "A thing", TargetRef::Local { path: program.clone() }).unwrap();
+        let entry = crate::BackendEntry {
+            config: crate::BackendConfig {
+                name: "Claude".into(),
+                kind: BackendKind::AgentCli,
+                model: "claude-code".into(),
+                base_url: None,
+                ssh_host: None,
+                enabled: true,
+            },
+            options: Default::default(),
+        };
+        let targets = |ws: &Workspace, deep: bool| check_worker(ws, deep).agent_spec(ws, &entry, &RunOptions::default()).unwrap().targets;
+        let shared = targets(&ws, true);
+        assert_eq!(shared.iter().map(|t| &t.path).collect::<Vec<_>>(), [&program], "Deep hands the builder the program");
+        assert_eq!(shared.first().map(|t| t.sha256.len()), Some(64));
+        assert!(targets(&ws, false).is_empty(), "Clean room hands nothing to open");
+        std::fs::remove_file(&program).unwrap();
+        assert!(targets(&ws, true).is_empty(), "a program that's gone is left for the builder to open");
+        let none = Workspace::create(d.path(), "y", "A thing", TargetRef::None).unwrap();
+        assert!(targets(&none, true).is_empty(), "no program, nothing to open");
+    }
+
     /// Add the local API backend the transcript tests start.
     fn local_api(b: &Bench) {
         b.hub

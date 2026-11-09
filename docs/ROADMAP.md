@@ -1304,6 +1304,10 @@ Gaps found while using the app for real projects.
       limit, so the run reports a stuck check itself. Unit tests only; the stuck self-test wasn't
       reproduced (the same game's `--self-test` now exits in 16 s)
       — claimed: NeuTroNBZh, branch bugfix/r2.9-rebuild-check-wait
+- [x] A later request's builder found "Nothing is open yet": each request starts a new run whose
+      tools have nothing open. In Deep mode the builder's tools are now handed the project's own
+      program, as a chat hands its open targets (#1421)
+      — claimed: bflatastic, branch bugfix/r2.9-builder-opens-project-target
 - [ ] Find why a builder's own check stayed on "game-self-test" for over 20 minutes on Windows,
       past the run's 90 s limit on the game's run (seen three times with a Unity 6000.6 build)
 
