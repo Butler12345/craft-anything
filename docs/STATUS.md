@@ -448,6 +448,13 @@ later readable run starts a fresh comparison. Checks and the existing round limi
 Cancellation still stops the run; completed builder replies are saved as awaiting checks before
 the post-turn scan. Broken or newer progress records and record-write failures remain errors.
 
+A check round in which every check worked is kept (in memory, and as `checked` in the record once
+`craft.json` has the round). While nothing it looks at changes (the app's files as above, the
+names, sizes and times of `reference/` and `capture/`, the kind, stack, mode, plugin checks and
+the project's folder), the next check, the builder's own `rebuild_check` included, takes its
+results instead of building and starting the app again, and the feed says so. A round with any
+failure is never kept, so Try again always looks again. Not run live.
+
 Scripted API turns and executable CLI stand-ins cover the stop, persistence, fresh requests and
 check recovery. This change has not been verified with a paid model or a live provider. Copying a
 whole project keeps its progress record; Duplicate creates a new attempt with a fresh conversation
