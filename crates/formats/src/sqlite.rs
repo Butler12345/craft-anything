@@ -1381,13 +1381,15 @@ fn literal_value(tokens: &[&str], affinity: Affinity, allow_words: bool) -> Opti
     let integer = number_kind(&clean)?;
     match affinity {
         // A row stored before ALTER TABLE ADD COLUMN reads the DEFAULT expression, not what a
-        // later insert stores: an integer that fits in 64 bits is written plainly (`007` reads
-        // '7'), and any other number keeps its spelling without separators or a leading plus
-        // (`1e3` reads '1e3', `5.` reads '5.', `1_000.` reads '1000.'), as SQLite 3.50 reads them.
+        // later insert stores: an integer whose digits fit in 64 bits is written plainly (`007`
+        // reads '7'), and any other number keeps its spelling without separators or a leading
+        // plus (`1e3` reads '1e3', `5.` reads '5.', `-09223372036854775808` keeps its zero), as
+        // SQLite 3.50 reads them.
         Affinity::Text => {
             let spelling = clean.strip_prefix('+').unwrap_or(&clean);
-            Some(match spelling.parse::<i64>() {
-                Ok(n) if integer => integer_default(n, affinity),
+            let (negative, digits) = spelling.strip_prefix('-').map_or((false, spelling), |digits| (true, digits));
+            Some(match digits.parse::<i64>() {
+                Ok(n) if integer && !digits.starts_with(['+', '-']) => integer_default(if negative { -n } else { n }, affinity),
                 _ => text_value(spelling.as_bytes()),
             })
         }
@@ -2394,6 +2396,10 @@ mod tests {
             ("x TEXT DEFAULT 007", text("7")),
             ("x TEXT DEFAULT - 007", text("-7")),
             ("x TEXT DEFAULT 0099999999999", text("99999999999")),
+            ("x TEXT DEFAULT -0099999999999", text("-99999999999")),
+            ("x TEXT DEFAULT -09223372036854775808", text("-09223372036854775808")),
+            ("x TEXT DEFAULT +09223372036854775807", text("9223372036854775807")),
+            ("x TEXT DEFAULT -00", text("0")),
             ("x CLOB DEFAULT +1e3", text("1e3")),
             ("x TEXT DEFAULT 5.", text("5.")),
             ("x TEXT DEFAULT 0.10", text("0.10")),
