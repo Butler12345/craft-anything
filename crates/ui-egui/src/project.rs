@@ -154,6 +154,7 @@ impl CraftApp {
             kinds: self.kinds.clone(),
             max_rounds: build.max_rounds,
             good_enough: build.good_enough,
+            clean_room: Some(!self.settings.deep_mode),
             ..RunOptions::default()
         }
     }
@@ -1167,16 +1168,27 @@ fn steps(app: &CraftApp, ui: &mut Ui, ws: &Workspace) {
     });
 }
 
-/// A caption on the left and its value on the right.
+/// A caption on the left and its value on the right, or the value on a line of its own when the
+/// two would overlap: a right-to-left layout doesn't make room for what's already on the row.
 fn stat_row(ui: &mut Ui, label: &str, value: &str) -> egui::Response {
     let t = Tokens::get(ui.ctx());
-    ui.horizontal(|ui| {
-        widgets::caption(ui, label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(value).font(theme::mono(13.0)).color(t.text));
-        });
-    })
-    .response
+    let text = RichText::new(value).font(theme::mono(13.0)).color(t.text);
+    let value_width =
+        egui::WidgetText::from(text.clone()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::FontSelection::Default).size().x;
+    let caption_width = widgets::label_galley(ui, &tr(label), 12.0, t.text_faint).size().x;
+    if caption_width + ui.spacing().item_spacing.x + value_width <= ui.available_width() {
+        ui.horizontal(|ui| {
+            widgets::caption(ui, label);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(text));
+        })
+        .response
+    } else {
+        ui.vertical(|ui| {
+            widgets::caption(ui, label);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| ui.label(text));
+        })
+        .response
+    }
 }
 
 fn feed(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
@@ -1857,19 +1869,33 @@ fn composer(app: &mut CraftApp, ui: &mut Ui, width: f32, t: &Tokens) {
             app.pause();
         }
         if out.send {
-            // A question (the switch, or /btw) is answered without building.
-            match crate::just_ask::question_in(&app.state.project_input, app.state.just_ask) {
-                Ok(Some(q)) => {
+            // /approvals changes a choice and sends nothing.
+            match crate::approvals::command_in(&app.state.project_input) {
+                Some(Ok((kind, choice))) => {
                     app.state.project_input.clear();
-                    app.ask_about_build(q);
+                    if let Some(root) = app.workspace.as_ref().map(|w| w.root.clone()) {
+                        app.set_approval(&root, kind, choice);
+                    }
                 }
-                Ok(None) => app.send_message(),
-                // It stays in the box to be fixed.
-                Err(why) => app.toast(why, true),
+                Some(Err(why)) => app.toast(why, true),
+                None => send_or_ask(app),
             }
         }
         questions_switch(app, ui);
     });
+}
+
+/// Send what's in the prompt box: a question (the switch, or /btw) is answered without building.
+fn send_or_ask(app: &mut CraftApp) {
+    match crate::just_ask::question_in(&app.state.project_input, app.state.just_ask) {
+        Ok(Some(q)) => {
+            app.state.project_input.clear();
+            app.ask_about_build(q);
+        }
+        Ok(None) => app.send_message(),
+        // It stays in the box to be fixed.
+        Err(why) => app.toast(why, true),
+    }
 }
 
 /// Under the prompt box: what sending does (ask for a change, or just ask about the build), and
@@ -1883,7 +1909,10 @@ fn questions_switch(app: &mut CraftApp, ui: &mut Ui) {
     ui.add_space(4.0);
     let (sending, asking) = (["Change it", "Just ask"], ["Ask me", "Decide yourself"]);
     let title = widgets::label_galley(ui, &tr(QUESTIONS_TITLE), theme::SMALL, t.text_dim).size().x;
-    let gaps = ui.spacing().item_spacing.x * 3.0;
+    // The approvals menu's link, the space before it and one more item gap.
+    let approvals = widgets::label_galley(ui, &tr("Approvals"), theme::BODY, t.text).size().x + 8.0;
+    let gaps = ui.spacing().item_spacing.x * 4.0;
+    let title = title + approvals;
     // Side by side when both switches fit, else one under the other (a longer language, a narrow window).
     let fits = widgets::segmented_width(ui, &sending) + widgets::segmented_width(ui, &asking) + title + gaps <= ui.available_width();
     let hint = |ui: &mut Ui| {
@@ -1914,6 +1943,9 @@ const QUESTIONS_TITLE: &str = "Builder's questions:";
 
 fn questions_controls(app: &mut CraftApp, ui: &mut Ui, now: craft_anything_engine::workspace::Questions, root: &Path, t: &Tokens) {
     use craft_anything_engine::workspace::Questions;
+    // Right to left: the approvals menu at the end of the row.
+    crate::approvals::menu(app, ui, root);
+    ui.add_space(8.0);
     {
         let sel = usize::from(now == Questions::Decide);
         if let Some(i) = widgets::segmented(ui, &["Ask me", "Decide yourself"], sel, 24.0) {

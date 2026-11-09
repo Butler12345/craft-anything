@@ -36,6 +36,7 @@ pub struct PeHeaders {
     pub pe32_plus: bool,
     pub image_base: u64,
     pub entry_rva: u32,
+    pub size_of_headers: u32,
     pub subsystem: u16,
     pub dll_characteristics: u16,
     pub linker: (u8, u8),
@@ -56,8 +57,7 @@ impl PeHeaders {
                 return usize::try_from(s.raw_offset.checked_add(delta)?).ok();
             }
         }
-        let first = self.sections.iter().map(|s| s.raw_offset).filter(|o| *o > 0).min().unwrap_or(u32::MAX);
-        if rva < first { usize::try_from(rva).ok() } else { None }
+        if rva < self.size_of_headers { usize::try_from(rva).ok() } else { None }
     }
 
     pub fn dir(&self, i: usize) -> Option<(u32, u32)> {
@@ -126,6 +126,7 @@ pub fn headers(data: &[u8]) -> Result<PeHeaders, FormatError> {
         pe32_plus,
         image_base,
         entry_rva: optional.u32_le(16).unwrap_or(0),
+        size_of_headers: optional.u32_le(60).unwrap_or(0),
         subsystem: optional.u16_le(68).unwrap_or(0),
         dll_characteristics: optional.u16_le(70).unwrap_or(0),
         linker: (optional.u8(2).unwrap_or(0), optional.u8(3).unwrap_or(0)),
@@ -746,10 +747,7 @@ pub fn parse_resources(data: &[u8], max_entries: usize) -> Result<Resources, For
     };
     let mapped_len = match h.sections.iter().enumerate().find(|(_, s)| rva.checked_sub(s.rva).is_some_and(|delta| delta < s.virtual_size.max(s.raw_size))) {
         Some((index, s)) => rva.checked_sub(s.rva).and_then(|delta| s.raw_size.checked_sub(delta)).map(|len| len.min(next_section_distance(index))),
-        None => {
-            let first = h.sections.iter().map(|s| s.raw_offset).filter(|&o| o > 0).min().unwrap_or(u32::MAX);
-            first.checked_sub(rva).map(|len| len.min(next_section_distance(h.sections.len())))
-        }
+        None => h.size_of_headers.checked_sub(rva).map(|len| len.min(next_section_distance(h.sections.len()))),
     }
     .map(u64::from)
     .and_then(|len| {
@@ -885,6 +883,16 @@ fn align4(x: usize) -> usize {
     x.saturating_add(3) & !3
 }
 
+/// The offset of a child version node after `value_bytes` of value, when one is present rather
+/// than only alignment padding.
+fn version_child_start(r: &Reader<'_>, value_off: usize, value_bytes: usize, node_end: usize) -> Option<usize> {
+    let start = align4(value_off.saturating_add(value_bytes));
+    let len = r.u16_le(start)?;
+    (len >= 6 && start.checked_add(usize::from(len)).is_some_and(|end| end <= node_end)).then_some(start)
+}
+
+/// Read the version nodes between `start` and `end` into `info`: the fixed file and product
+/// versions, then each string. `depth` counts levels below VS_VERSION_INFO, so strings are at 3.
 fn walk_version(r: &Reader<'_>, start: usize, end: usize, depth: u8, info: &mut VersionInfo) {
     if depth > 6 {
         return;
@@ -926,10 +934,27 @@ fn walk_version(r: &Reader<'_>, start: usize, end: usize, depth: u8, info: &mut 
             }
             "StringFileInfo" => walk_version(r, align4(value_off + value_bytes), node_end, depth + 1, info),
             "VarFileInfo" => {}
+            // A string with an empty value stores no value at all (wValueLength 0), as
+            // OleSelfRegister does. Strings sit right under a string table, one level below it;
+            // a leaf deeper down is inside another node's value. A value read earlier is kept.
+            _ if depth == 3 && !key.is_empty() && is_text && value_len == 0 && value_off >= node_end => {
+                info.strings.entry(key).or_default();
+            }
             _ if depth >= 2 && is_text && value_len > 0 => {
                 let units = value_len.min((node_end.saturating_sub(value_off)) / 2);
                 let v = utf16_at(r, value_off, units).unwrap_or_default();
                 info.strings.insert(key, v.trim_end_matches('\0').to_string());
+            }
+            // Some linkers write a string with wType 0; its value is still UTF-16LE. A child
+            // node after the value means this is a container, not a string.
+            _ if depth >= 2 && !is_text && !key.is_empty() && value_len > 0 => {
+                if let Some(child) = version_child_start(r, value_off, value_len, node_end) {
+                    walk_version(r, child, node_end, depth + 1, info);
+                } else if depth == 3 {
+                    let units = (value_len / 2).min((node_end.saturating_sub(value_off)) / 2);
+                    let v = utf16_at(r, value_off, units).unwrap_or_default();
+                    info.strings.insert(key, v.trim_end_matches('\0').to_string());
+                }
             }
             _ => walk_version(r, align4(value_off + value_bytes), node_end, depth + 1, info),
         }
@@ -944,6 +969,22 @@ fn walk_version(r: &Reader<'_>, start: usize, end: usize, depth: u8, info: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_rvas_stop_before_file_padding() {
+        let mut pe = craft_anything_testkit::pe64();
+        let first = headers(&pe).unwrap().sections[0].raw_offset;
+        let opt = Reader::new(&pe).u32_le(0x3c).unwrap() as usize + 24;
+        let size_headers = 0x200_u32;
+        pe[opt + 60..opt + 64].copy_from_slice(&size_headers.to_le_bytes());
+        let coff = opt - 20;
+        let section = opt + usize::from(Reader::new(&pe).u16_le(coff + 16).unwrap());
+        pe[section + 20..section + 24].copy_from_slice(&(first + 0x400).to_le_bytes());
+        let h = headers(&pe).unwrap();
+        assert_eq!(h.rva_to_offset(size_headers - 1), Some(0x1ff));
+        assert_eq!(h.rva_to_offset(size_headers), None);
+        assert_eq!(h.rva_to_offset(h.sections[0].rva), Some((first + 0x400) as usize));
+    }
 
     #[test]
     fn imports_carry_iat_slots() {

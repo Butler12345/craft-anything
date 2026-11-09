@@ -7,6 +7,7 @@
 //! holding it never freezes a frame; the last snapshot ([`SessionView`]) is shown meanwhile.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod approvals;
 pub mod builders;
 pub mod chat;
 pub mod demo;
@@ -488,6 +489,7 @@ pub struct CraftApp {
     pub asked: std::collections::HashMap<PathBuf, Vec<just_ask::Asked>>,
     /// Every project's pinned builds, and whether they're running (read by `refresh_pins`).
     pub pins: Vec<pins::PinRow>,
+    pub pinned_copy_bytes: Option<u64>,
     pub pins_read_at: Option<Instant>,
     /// An address to open in the browser on the next frame (set from a worker's result).
     open_url: Option<String>,
@@ -588,6 +590,7 @@ impl CraftApp {
             projects: Vec::new(),
             preview: None,
             pins: Vec::new(),
+            pinned_copy_bytes: None,
             asked: Default::default(),
             pins_read_at: None,
             open_url: None,
@@ -974,6 +977,7 @@ impl CraftApp {
                 }
                 self.toast(tr("Called done. A new message carries on from here."), false);
             }
+            ("project_approvals_set", r) => self.approval_set(r),
             ("project_questions_set", Ok(v)) => {
                 // What was saved (the person's other changes on disk come along).
                 if let Some(ws) = self.workspace.as_mut().filter(|w| v["project"].as_str().is_some_and(|p| w.root == std::path::Path::new(p))) {
