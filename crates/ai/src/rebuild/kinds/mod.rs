@@ -171,8 +171,9 @@ pub struct CheckStop {
 }
 
 impl CheckStop {
-    /// A stop that also runs out at `until` (a round's time limit).
-    #[cfg(test)]
+    /// A stop that also runs out at `until` (a round's time limit). Only Unix tests use it, so it
+    /// isn't dead code (and a clippy failure) on Windows.
+    #[cfg(all(test, unix))]
     pub(crate) fn limited(until: Instant) -> CheckStop {
         CheckStop { stop: CancelToken::default(), until: Some(until) }
     }
