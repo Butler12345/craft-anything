@@ -190,8 +190,12 @@ impl OpenAi {
 
     /// Model ids from `GET /models`.
     pub fn list_models(&self, timeout: std::time::Duration) -> Result<Vec<String>, ToolError> {
-        let agent = http::quick_agent(timeout);
-        let v = http::get_json(&agent, &self.label, &self.url("models"), &self.headers())?;
+        self.list_models_with(&http::quick_agent(timeout))
+    }
+
+    /// [`OpenAi::list_models`] through `agent`, for its own waits.
+    pub fn list_models_with(&self, agent: &ureq::Agent) -> Result<Vec<String>, ToolError> {
+        let v = http::get_json(agent, &self.label, &self.url("models"), &self.headers())?;
         let arr = v.get("data").or_else(|| v.get("models")).and_then(Value::as_array).cloned().unwrap_or_default();
         // A catalogue may list a model only for another API (Responses, Messages): such an entry
         // would fail on a chat-completions client, so skip it when the entry says which APIs it

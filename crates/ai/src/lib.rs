@@ -396,6 +396,11 @@ pub struct AiHub {
     keys: KeyStore,
 }
 
+/// How long a server being added may take to answer once reached: one still starting, or loading
+/// a model before it answers (LM Studio, a llama.cpp router, Ollama on a machine that slept), needs
+/// longer than a quick probe (#1429).
+const ADD_SERVER_ANSWER: Duration = Duration::from_secs(60);
+
 impl AiHub {
     pub fn new(engine: Arc<Engine>) -> Self {
         AiHub { engine, settings_path: None, keys: KeyStore::system() }
@@ -498,6 +503,11 @@ impl AiHub {
     /// model, the first one it lists that can chat is used. Returns the model. Anthropic's own
     /// address is added as an Anthropic backend, as its API isn't OpenAI's.
     pub fn add_server(&self, name: &str, address: &str, model: Option<&str>, key: Option<String>) -> Result<String, ToolError> {
+        self.add_server_waiting(name, address, model, key, ADD_SERVER_ANSWER)
+    }
+
+    /// [`AiHub::add_server`], waiting `answer` for the server to answer once reached.
+    fn add_server_waiting(&self, name: &str, address: &str, model: Option<&str>, key: Option<String>, answer: Duration) -> Result<String, ToolError> {
         let name = name.trim();
         let address = address.trim().trim_end_matches('/');
         if name.is_empty() {
@@ -509,18 +519,21 @@ impl AiHub {
         }
         let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
         let kind = if anthropic::is_anthropic_api(address) { BackendKind::Anthropic } else { BackendKind::OpenaiCompatible };
+        let agent = http::probe_agent(answer);
         let listed = if kind == BackendKind::Anthropic {
-            anthropic::Anthropic::new(Some(address), key.clone().unwrap_or_default(), "").list_models(Duration::from_secs(10))
+            anthropic::Anthropic::new(Some(address), key.clone().unwrap_or_default(), "").list_models_with(&agent)
         } else {
             // OpenCode Go lists its models at /v1, not under the chat path a person would paste.
             let probe = if openai::is_opencode_go(address) { opencode_go_models_base(address) } else { address.to_string() };
-            openai::OpenAi::compatible(name, &probe, key.clone(), "").list_models(Duration::from_secs(10))
+            openai::OpenAi::compatible(name, &probe, key.clone(), "").list_models_with(&agent)
         };
         let models = listed.map_err(|e| {
-            let why = e.message.clone();
-            e.with_remediation(format!(
-                "Check the address (it usually ends in /v1), that the server is running and can be reached from this computer, and its key if it needs one. ({why})"
-            ))
+            let fix = if http::was_reached(&e) {
+                "It was reached but hadn't answered yet: it may still be starting or loading a model. Wait until it's ready, then add it again."
+            } else {
+                "Check the address (it usually ends in /v1), that the server is running and can be reached from this computer, and its key if it needs one."
+            };
+            e.with_remediation(fix)
         })?;
         let model = match model.map(str::trim).filter(|m| !m.is_empty()) {
             Some(m) => m.to_string(),

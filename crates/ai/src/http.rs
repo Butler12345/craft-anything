@@ -38,6 +38,18 @@ pub fn quick_agent(total: Duration) -> ureq::Agent {
     agent(total, total, total)
 }
 
+/// The agent for asking a server for its models when adding it: a short wait to reach it, and
+/// `answer` for it to answer, as one still starting or loading a model answers late (#1429).
+pub fn probe_agent(answer: Duration) -> ureq::Agent {
+    agent(Duration::from_secs(10), answer, answer)
+}
+
+/// The server took the request but didn't start answering in time: it was reached, so advice
+/// about its address doesn't fit.
+pub fn was_reached(e: &ToolError) -> bool {
+    e.details.as_ref().and_then(|d| d.get("reached")).and_then(Value::as_bool) == Some(true)
+}
+
 /// A request that failed before any answer came. A server on this computer (Ollama, LM Studio) is
 /// told apart: the internet has nothing to do with it, and one that took the request but didn't
 /// start answering was reached, so "Couldn't reach" misled (a large model still loading, #1239).
@@ -51,7 +63,8 @@ fn net_error(what: &str, url: &str, e: ureq::Error) -> ToolError {
             "A server busy with another tool's work may need longer."
         };
         return ToolError::new(ErrorCode::TimedOut, format!("{what} took the request but didn't start answering in time."))
-            .with_remediation(format!("{why} {LONGER}"));
+            .with_remediation(format!("{why} {LONGER}"))
+            .with_details(serde_json::json!({ "reached": true }));
     }
     let code = if matches!(e, ureq::Error::Timeout(_)) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
     let remediation = if local {
@@ -342,7 +355,9 @@ mod tests {
             // It was reached: not "Couldn't reach", and nothing about the internet.
             assert_eq!(queued.message, "Ollama took the request but didn't start answering in time.");
             assert!(!queued.remediation.as_deref().unwrap_or_default().contains("internet"), "{queued:?}");
+            assert!(was_reached(&queued), "{queued:?}");
             let down = net_error("Ollama", url, ureq::Error::ConnectionFailed);
+            assert!(!was_reached(&down), "{down:?}");
             assert!(down.message.starts_with("Couldn't reach Ollama"), "{down:?}");
             assert!(down.remediation.as_deref().is_some_and(|r| r.contains("server is running")), "{down:?}");
         }

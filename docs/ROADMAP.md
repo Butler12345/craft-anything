@@ -1324,6 +1324,13 @@ Gaps found while using the app for real projects.
       it now. A build stopped during a check answers it ("stopped before this check finished")
       instead of leaving the builder waiting, including a stop seen before the check starts
       — claimed: NeuTroNBZh, branch bugfix/r2.9-rebuild-check-mark-race
+- [x] Adding a model server by its address gave up after 10 seconds and said to check the
+      address even when the server was reached: it now has a minute to answer once reached
+      (one still starting or loading a model), and a server that was reached is told to wait and
+      add it again (#1429)
+      — claimed: bflatastic, branch bugfix/r2.9-add-server-probe-wait
+- [ ] While a server is being added, the form shows nothing but a row in Jobs: show that it is
+      connecting (and for how long) beside the form, and keep Add from being pressed twice (#1429)
 - [ ] Find why a builder's own check stayed on "game-self-test" for over 20 minutes on Windows,
       past the run's 90 s limit on the game's run (seen three times with a Unity 6000.6 build)
 

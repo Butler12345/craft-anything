@@ -821,6 +821,33 @@ input.on('line', line => {
     }
 }
 
+/// #1429: a server that was reached but hadn't answered in time (still starting, or loading a
+/// model) is told to wait and add it again, not to check its address; one that can't be reached
+/// still is. The advice doesn't repeat the message.
+#[test]
+fn a_reached_server_that_answers_late_is_told_to_wait() {
+    let (h, _d) = hub();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            std::thread::sleep(Duration::from_secs(5));
+            drop(stream);
+        }
+    });
+    let late = h.add_server_waiting("Slow box", &url, None, None, Duration::from_millis(300)).unwrap_err();
+    assert_eq!(late.code, ErrorCode::TimedOut, "{late:?}");
+    let fix = late.remediation.as_deref().unwrap_or_default();
+    assert!(fix.contains("loading a model") && !fix.contains("Check the address"), "{fix}");
+    assert!(!fix.contains(&late.message), "the advice doesn't repeat the message: {fix}");
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gone = format!("http://{}/v1", closed.local_addr().unwrap());
+    drop(closed);
+    let down = h.add_server_waiting("Gone", &gone, None, None, Duration::from_millis(300)).unwrap_err();
+    assert!(down.remediation.as_deref().is_some_and(|r| r.contains("Check the address")), "{down:?}");
+    assert!(h.backends().is_empty(), "nothing added");
+}
+
 /// #54, #98: a server on another computer is added by its address, with a model that can chat
 /// when none is named; one that doesn't answer with its models isn't added.
 #[test]
