@@ -1051,6 +1051,13 @@ Gaps found while using the app for real projects.
       — claimed: tanish2k09, branch feature/r2.9-approvals-ui
 - [ ] The new approvals strings in every catalog were written with an AI; not reviewed by native
       speakers yet — pt-BR claimed: marlonferreira1800-hue, branch docs/r2.9-approvals-pt-br-review
+- [ ] A prompt that changes nothing in app/ still builds and starts the app again, often twice (the
+      builder's own rebuild_check, then the check after its turn). Keep a check whose round all
+      worked while the app's files and what it's compared with are unchanged
+      — claimed: tanish2k09, branch feature/r2.9-reuse-unchanged-check
+- [ ] A check starts the app in front, with focus, on the main monitor, in the way of whatever the
+      person is doing. Start it behind other windows without taking focus (it's still pictured);
+      Play keeps opening it in front
 - [x] Keep New project's content column fixed while the vertical scrollbar animates in or out,
       hiding it when there is nothing to scroll, so switching tabs never shifts the page horizontally
       — claimed: Codex, branch bugfix/r2.9-home-scrollbar-gutter
