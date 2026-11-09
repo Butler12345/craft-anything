@@ -1056,9 +1056,11 @@ Gaps found while using the app for real projects.
       worked while the app's files and what it's compared with are unchanged
       — claimed: tanish2k09, branch feature/r2.9-reuse-unchanged-check
 - [x] A check starts the app in front, with focus, on the main monitor, in the way of whatever the
-      person is doing. The `--screenshot` contract now asks for the window behind other windows,
-      without focus (egui's `with_active(false)` and `AlwaysOnBottom`, which winit shows on Windows
-      with `SW_SHOWNOACTIVATE` at `HWND_BOTTOM`); Play still opens it in front. It's the builder's
+      person is doing. The `--screenshot` contract now asks for the window without focus, and on
+      Windows behind other windows (egui's `with_active(false)` and `AlwaysOnBottom`, which winit
+      shows with `SW_SHOWNOACTIVATE` at `HWND_BOTTOM`; on macOS and X11 a covered window is
+      reported occluded and eframe stops painting it, so it isn't lowered there); it must keep
+      drawing unfocused (Unity's `runInBackground`). Play still opens it in front. It's the builder's
       to do, so a build made before reads it only in a new brief, and nothing checks it was done.
       Not run live — claimed: tanish2k09, branch feature/r2.9-check-window-behind
 - [ ] A runtime study's check also starts the build normally (`native_window_capture`) to picture

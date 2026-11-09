@@ -13,7 +13,7 @@ use craft_anything_engine::workspace::Claim;
 use craft_anything_platform::process::Process;
 
 /// What every app and game brief asks for, so the check can see the result.
-pub const SCREENSHOT_CONTRACT: &str = "Give the program a `--screenshot <file.png>` option: start normally, draw about 120 frames, save the window's picture as a PNG to that file and exit. With the option, open the window behind other windows and without taking focus, so a check never gets in the way of what the person is doing (egui: `ViewportBuilder::with_active(false)` and `with_window_level(WindowLevel::AlwaysOnBottom)`, and on macOS `with_activate_ignoring_other_apps(false)` through `NativeOptions::event_loop_builder`; other stacks: their own way to show a window without focus and below other windows, or without focus where they can't lower it), and keep it drawing while it isn't focused (Unity: `Application.runInBackground = true`), or the picture never comes; started without it, the program opens as usual. Craft Anything runs it that way after each build to check the result, and a build without the option, or with a blank picture, doesn't pass. Try it yourself: run it with a file inside app/ (for example app/shots/now.png) and check that it saves the picture.";
+pub const SCREENSHOT_CONTRACT: &str = "Give the program a `--screenshot <file.png>` option: start normally, draw about 120 frames, save the window's picture as a PNG to that file and exit. With the option, open the window without taking focus, so a check never gets in the way of what the person is doing, and on Windows also behind other windows (a covered window still draws there; on macOS and Linux it may stop drawing, so don't lower it there). Keep it drawing while it isn't focused, or the picture never comes. In egui: `ViewportBuilder::with_active(false)`, on Windows `with_window_level(WindowLevel::AlwaysOnBottom)`, and on macOS `with_activate_ignoring_other_apps(false)` through `NativeOptions::event_loop_builder`; in Unity, `Application.runInBackground = true`; other stacks, their own way. Started without the option, the program opens as usual. Craft Anything runs it that way after each build to check the result, and a build without the option, or with a blank picture, doesn't pass. Try it yourself: run it with a file inside app/ (for example app/shots/now.png) and check that it saves the picture.";
 
 /// Include the shared catalogue's supported entrypoints so the builder knows how checks start it.
 /// A builder that can look at pictures is also told to look at its own.
@@ -452,9 +452,11 @@ mod tests {
         // The check starts the program after every build; its window mustn't take over the screen.
         for sees in [false, true] {
             let c = contract(sees);
-            assert!(c.contains("behind other windows and without taking focus") && c.contains("with_active(false)"), "{c}");
-            assert!(c.contains("started without it, the program opens as usual"), "Play still opens it in front: {c}");
-            assert!(c.contains("keep it drawing while it isn't focused"), "a player that pauses unfocused never saves: {c}");
+            assert!(c.contains("open the window without taking focus") && c.contains("with_active(false)"), "{c}");
+            // A covered window may stop drawing on macOS and Linux, so only Windows is asked to lower it.
+            assert!(c.contains("on Windows also behind other windows") && c.contains("don't lower it there"), "{c}");
+            assert!(c.contains("Started without the option, the program opens as usual"), "Play still opens it in front: {c}");
+            assert!(c.contains("Keep it drawing while it isn't focused"), "a player that pauses unfocused never saves: {c}");
         }
     }
 
