@@ -397,16 +397,16 @@ pub fn glossary_word(ui: &mut Ui, word: &str, meaning: &str, font: egui::FontId)
     })
 }
 
-/// Draw an animation's next frame in `every` (30 a second looks smooth), or once a second while
-/// the window is in the background: a build can run for an hour, and redrawing the whole window 30
-/// times a second for it while the person works elsewhere costs the battery.
+/// Draw an animation's next frame in `every` (about 15 a second is smooth enough for a spinner),
+/// or once a second while the window is in the background: a build can run for an hour, and
+/// redrawing the whole window 30 times a second for it costs the battery.
 pub fn animate(ui: &Ui, every: std::time::Duration) {
     let focused = ui.input(|i| i.viewport().focused.unwrap_or(true));
     ui.ctx().request_repaint_after(if focused { every } else { std::time::Duration::from_secs(1) });
 }
 
 /// One frame of an animation at the usual pace.
-pub const FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+pub const FRAME: std::time::Duration = std::time::Duration::from_millis(66);
 
 /// A bar's indeterminate sweep at `now` (seconds): a lit quarter that runs along `bar` over its
 /// track, for work that is moving but can't say how far it has got.

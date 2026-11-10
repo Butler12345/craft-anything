@@ -269,9 +269,7 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       for a frame at once every frame, ours at the animation's pace (`widgets::Spinner`, #579)
 - [x] A job whose progress isn't known no longer makes the window redraw at the display's rate:
       the jobs list used egui's animated `ProgressBar`, which asks for a frame at once every frame
-      like egui's spinner did (`widgets::ProgressBar`). Animations in a focused window run at 30
-      frames a second, not 15 (#213 chose 15 as "smooth enough"; nothing measured it), and still
-      once a second in the background
+      like egui's spinner did (`widgets::ProgressBar`)
       — claimed: Claude, branch bugfix/r5.2-paced-progress-bar
 - [ ] Measure #579 on Windows 11 (0.3.0 portable): the app's CPU while idle, while a build runs and
       during a website capture, before and after; and why a website capture is slow and sits for a
