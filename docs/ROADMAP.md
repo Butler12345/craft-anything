@@ -305,7 +305,7 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
 - [x] `docs/opencode.md` still has one passage twice, missed by #1226: in "Configuration and
       execution", the older copy of the standalone-server sentence, cut off after "both"
       — claimed: youkaicountry, branch docs/r5.2-opencode-doubled-passage
-- [ ] Let a UI change land with its new strings in English while native speakers review their
+- [x] Let a UI change land with its new strings in English while native speakers review their
       translations: `cargo xtask i18n-coverage` accepts strings listed as awaiting translation,
       and the translation PR empties the list
       — claimed: tanish2k09, branch chore/r5.2-awaiting-translation
