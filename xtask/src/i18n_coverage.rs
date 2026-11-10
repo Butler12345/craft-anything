@@ -95,7 +95,7 @@ pub fn check(root: &Path) -> bool {
         return false;
     };
     let mut catalogs = Vec::new();
-    for code in ["zh-hans", "zh-hant", "ru", "ko", "de", "ka", "es", "it", "vi", "pt-br", "tr", "th", "et"] {
+    for code in ["zh-hans", "zh-hant", "ru", "ko", "cs", "de", "ka", "es", "it", "vi", "pt-br", "tr", "th", "et"] {
         let path = source.join("i18n").join(format!("{code}.tsv"));
         let Ok(text) = std::fs::read_to_string(&path) else {
             eprintln!("i18n: can't read {}", path.display());
@@ -116,9 +116,15 @@ pub fn check(root: &Path) -> bool {
 /// The list of strings that may be missing from the catalogs for now, beside them in `i18n/`.
 const AWAITING: &str = "awaiting.txt";
 
-/// A catalog's keys, with `\n` read as a line break as the app reads it.
+/// A catalog's keys, read as the app reads them (`i18n::parse`): a key with an empty translation
+/// shows in English, so it isn't translated.
 fn catalog_keys(text: &str) -> BTreeSet<String> {
-    text.lines().filter(|l| !l.starts_with('#')).filter_map(|l| l.split_once('\t')).map(|(k, _)| k.replace("\\n", "\n")).collect()
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.split_once('\t'))
+        .filter(|(k, v)| !k.is_empty() && !v.trim().is_empty())
+        .map(|(k, _)| k.replace("\\n", "\n"))
+        .collect()
 }
 
 /// One string per line, written as in a catalog; `#` starts a comment line.
@@ -212,6 +218,8 @@ mod tests {
     fn the_awaiting_list_reads_like_a_catalog_key_column() {
         assert_eq!(awaiting_keys("# strings waiting\n\nWrap lines\nTwo\\nlines\n"), set(&["Wrap lines", "Two\nlines"]));
         assert_eq!(catalog_keys("# c\nOpen\tÖffnen\nTwo\\nlines\tx\n"), set(&["Open", "Two\nlines"]));
+        // An empty translation shows in English, so it isn't one; nor is an indented comment.
+        assert_eq!(catalog_keys("Open\t \n  # Close\tx\nCopy\tKopieren\n"), set(&["Copy"]));
     }
 
     /// The list in the repository parses, so CI's check reads what's committed.

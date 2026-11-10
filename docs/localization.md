@@ -153,7 +153,10 @@ translations in a PR of their own. List each new string in `crates/ui-egui/src/i
 (one per line, as in a catalog's first column). The coverage command lets the strings listed
 there be missing, and the app shows them in English until a catalog has them. The command fails
 once a listed string is in every catalog, or is no longer shown, so the translation PR takes it
-out of the list.
+out of the list. The catalog tests require every catalog to have the same keys, so that PR adds
+each string to all of them at once. Only strings the command finds can be listed: a literal in
+`tr`, `trf` or a widget's label, not one passed through a constant (`tr(LABEL)`), which the
+command can't see and would report as not shown.
 
 The existing snapshot example accepts any catalog code with `--lang`, such as
 `--lang zh-hant` or `--lang ko`, for example:
