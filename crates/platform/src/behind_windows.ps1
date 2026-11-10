@@ -44,22 +44,33 @@ public static class CraftAnythingBehind {
     // SWP_ASYNCWINDOWPOS: ask, and don't wait for the window's program to answer.
     const uint Async = 0x4000;
 
-    // The root and every process started under it, from one snapshot of the process list.
-    static HashSet<uint> Tree(uint root) {
-        var tree = new HashSet<uint> { root };
+    // Processes that ran before the program started (taken while warming up, before it starts),
+    // so never its descendants: Windows reuses ids, and a recorded parent id can name a process
+    // that's not that parent's, so an older program could otherwise join the tree.
+    static HashSet<uint> before = new HashSet<uint>();
+
+    // All process ids, with their recorded parents.
+    static List<KeyValuePair<uint, uint>> Processes() {
         var parents = new List<KeyValuePair<uint, uint>>();
         IntPtr snap = CreateToolhelp32Snapshot(2, 0);
-        if (snap == new IntPtr(-1)) return tree;
+        if (snap == new IntPtr(-1)) return parents;
         try {
             var e = new Entry { size = (uint)Marshal.SizeOf(typeof(Entry)) };
             for (bool ok = Process32FirstW(snap, ref e); ok; ok = Process32NextW(snap, ref e)) {
                 parents.Add(new KeyValuePair<uint, uint>(e.pid, e.parent));
             }
         } finally { CloseHandle(snap); }
+        return parents;
+    }
+
+    // The root and every process started under it since the program began.
+    static HashSet<uint> Tree(uint root) {
+        var tree = new HashSet<uint> { root };
+        var parents = Processes();
         for (bool grew = true; grew; ) {
             grew = false;
             foreach (var p in parents) {
-                if (p.Key != p.Value && !tree.Contains(p.Key) && tree.Contains(p.Value)) { tree.Add(p.Key); grew = true; }
+                if (p.Key != p.Value && !before.Contains(p.Key) && !tree.Contains(p.Key) && tree.Contains(p.Value)) { tree.Add(p.Key); grew = true; }
             }
         }
         return tree;
@@ -123,6 +134,7 @@ public static class CraftAnythingBehind {
 
     // Load and compile everything Run calls, so the first window isn't missed while it does.
     public static void WarmUp(Process owner) {
+        foreach (var p in Processes()) before.Add(p.Key);
         Tree((uint)owner.Id);
         Lower(new HashSet<uint>(), new Dictionary<IntPtr, int>());
         Process.GetProcessById(owner.Id).Dispose();
