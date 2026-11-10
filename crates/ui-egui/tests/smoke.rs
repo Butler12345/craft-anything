@@ -2325,6 +2325,10 @@ fn the_build_details_box_keeps_its_height_wraps_and_opens_in_its_own_window() {
     h.run_steps(3);
     assert!(h.state().activity_windows.is_empty());
     assert!(h.query_by_label("Alpha: build activity").is_none());
+    // The box is still at its newest line (a button over its scroll bar sent it to the top).
+    let grip = h.get_by_label("Drag to change the height").rect();
+    let last = long_line(&h);
+    assert!(last.bottom() <= grip.top() && last.bottom() > grip.top() - 3.0 * LINE, "{last:?} above {grip:?}");
 }
 
 #[test]
