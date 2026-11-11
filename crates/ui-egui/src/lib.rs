@@ -444,6 +444,8 @@ struct FirstFrames {
 }
 
 pub struct CraftApp {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) updates: updates::Updates,
     pub engine: Arc<Engine>,
     pub hub: Arc<AiHub>,
     pub state: UiState,
@@ -594,6 +596,8 @@ impl CraftApp {
         let settings = engine.session().settings.clone();
         i18n::set_language(&settings.language);
         CraftApp {
+            #[cfg(not(target_arch = "wasm32"))]
+            updates: Default::default(),
             engine,
             hub,
             state: UiState::default(),
@@ -1911,6 +1915,18 @@ impl CraftApp {
     /// Draw the whole interface.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let safe = !self.jobs.busy()
+                && !self.runs.any_busy()
+                && !self.conversation.as_ref().is_some_and(|c| c.is_busy())
+                && !self.settings_dirty
+                && self.save_due.is_none()
+                && self.saving.is_none();
+            if self.updates.show(&ctx, safe) {
+                return;
+            }
+        }
         self.tick(&ctx);
         self.shortcuts(&ctx);
         #[cfg(target_os = "macos")]
@@ -2229,5 +2245,15 @@ pub fn kind_icon(k: TargetKind) -> &'static str {
         TargetKind::Evm => "zap",
         TargetKind::Sqlite => "database",
         TargetKind::Unknown => "file",
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod updates;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for CraftApp {
+    fn drop(&mut self) {
+        self.updates.finish();
     }
 }

@@ -24,6 +24,7 @@ mod linux_gpu;
 /// Opens the window on the engine and AI hub (a path on the command line opens as the first
 /// target); if the window can't start, says why and where its log is.
 fn main() -> eframe::Result {
+    craft_anything_ui_egui::updates::finish_helper();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("craft-anything {}", env!("CARGO_PKG_VERSION"));

@@ -17,6 +17,8 @@ runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 command: craft-anything
 finish-args:
+  # Verified update helpers run through flatpak-spawn --host.
+  - --talk-name=org.freedesktop.Flatpak
   # Display: Wayland first; X11 only when no Wayland compositor is running.
   - --socket=wayland
   - --socket=fallback-x11
