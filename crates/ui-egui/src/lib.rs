@@ -589,6 +589,12 @@ pub struct CraftApp {
 }
 
 impl CraftApp {
+    /// Show the last update's result once the native window begins drawing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn show_update_outcome_on_start(&mut self) {
+        self.updates.startup();
+    }
+
     /// Initialize UI state from the shared engine's saved settings, waiting rather than substituting defaults.
     pub fn new(engine: Arc<Engine>, hub: Arc<AiHub>) -> Self {
         // Wait for the engine if it's busy: defaults here would show Clean room and no AI, and the
