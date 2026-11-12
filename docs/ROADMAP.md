@@ -1436,9 +1436,11 @@ Gaps found while using the app for real projects.
       `plan` in `crates/ui-egui/build.rs`, tested from `tests/craft_fonts_build.rs`. Built for
       real on Windows only
       — claimed: hichang4u, branch bugfix/r2.9-fonts-required
-- [ ] Reject a required browser font build when a nonempty craft-fonts manifest has no fonts
-      left after the WASM filter (#1736 review); keep the empty-manifest diagnostic and optional
-      builds working — claimed: Butler12345, branch bugfix/r2.9-wasm-required-font-filter
+- [x] A required browser font build fails when a nonempty craft-fonts manifest has no fonts
+      left after the WASM filter (#1736 review). Empty-manifest and missing-file errors stay
+      distinct; native and optional builds keep their behavior. Build-plan tests and real
+      wasm32 Cargo fixtures checked on Windows; no browser rendering checked
+      — claimed: Butler12345, branch bugfix/r2.9-wasm-required-font-filter
 - [x] An engine download the server can't answer right now (a 5xx, 429) says to try again later,
       not "update the pinned URL", which nobody installing an engine can do (#1193)
       — claimed: justinjohn0306, branch bugfix/r2.9-download-server-errors

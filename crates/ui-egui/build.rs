@@ -67,6 +67,9 @@ pub fn plan(dir: Option<OsString>, required: Option<OsString>, wasm: bool) -> Pl
         }
         None => {}
         Some(dir) => match craft_fonts(&dir, wasm, &mut plan.inputs) {
+            Ok(found) if required && found.is_empty() => {
+                plan.error = Some(format!("CRAFT_FONTS_DIR={}: no fonts remain after filtering for this target", dir.display()));
+            }
             Ok(found) => entries = found,
             Err(e) if required => plan.error = Some(format!("CRAFT_FONTS_DIR={}: {e}", dir.display())),
             Err(e) => plan.warning = Some(format!("building without craft-fonts: CRAFT_FONTS_DIR={}: {e}", dir.display())),
