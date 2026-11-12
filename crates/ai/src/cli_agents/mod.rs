@@ -11,6 +11,7 @@
 pub mod acp;
 pub mod adapters;
 pub mod claude_cost;
+pub mod grants;
 pub mod models;
 mod shared;
 pub mod unfinished;
@@ -72,12 +73,15 @@ pub fn program_of(config: &BackendConfig, options: &BackendOptions) -> Result<St
 }
 
 /// The saved program path `program` stands in for, when [`program_of`] chose another one (#721).
-/// A bare name (`claude.exe`) found as the same agent elsewhere isn't a replacement.
+/// A bare name (`claude.exe`) found as the same agent elsewhere isn't a replacement, nor is a path
+/// that's still there (a saved folder, or the Claude desktop app): it isn't gone.
 pub fn replaced_program(options: &BackendOptions, program: &str) -> Option<String> {
     let saved = options.command.as_deref().map(str::trim).filter(|c| !c.is_empty() && *c != program)?;
-    Path::new(saved).parent().is_some_and(|p| !p.as_os_str().is_empty()).then(|| saved.to_string())
+    let path = Path::new(saved);
+    (path.parent().is_some_and(|p| !p.as_os_str().is_empty()) && !path.exists()).then(|| saved.to_string())
 }
 
+/// Resolve saved commands locally through the shared lookup, but leave SSH commands untouched.
 fn program_in(config: &BackendConfig, options: &BackendOptions, search: Option<std::ffi::OsString>) -> Result<String, ToolError> {
     let usual = program_for(&config.model);
     let local = config.ssh_host.as_deref().is_none_or(|h| h.trim().is_empty());
@@ -108,7 +112,11 @@ fn program_in(config: &BackendConfig, options: &BackendOptions, search: Option<s
             None => Err(desktop_app_error(path)),
         };
     }
-    if !local || bare || path.exists() {
+    // Saved bare names share detection's desktop-CLI fallback, whichever agent owns it.
+    if local && bare {
+        return Ok(usual_program(chosen, search)?.unwrap_or_else(|| chosen.to_string()));
+    }
+    if !local || path.exists() {
         return Ok(chosen.to_string());
     }
     // Gone, and nothing beside it: the usual program if it's really here, else the saved path, so
@@ -122,7 +130,7 @@ fn program_in(config: &BackendConfig, options: &BackendOptions, search: Option<s
 fn usual_program(usual: &str, search: Option<std::ffi::OsString>) -> Result<Option<String>, ToolError> {
     let first = craft_anything_platform::which::which_in(usual, search.clone()).into_iter().next();
     match (first, find_program_in(usual, search)) {
-        (None, _) => Ok(desktop_cli(usual, local_app_data().as_deref()).map(|cli| cli.display().to_string())),
+        (None, _) => Ok(local_desktop_cli(usual).map(|cli| cli.display().to_string())),
         (Some(first), Some(real)) => Ok(Some(if first == real { usual.to_string() } else { real.display().to_string() })),
         (Some(app), None) => Err(desktop_app_error(&app)),
     }
@@ -140,7 +148,41 @@ fn desktop_app_error(app: &Path) -> ToolError {
 /// really it. Detection, the desktop app hint and starting a run all look through this, so what's
 /// offered is what runs.
 pub fn find_program(program: &str) -> Option<PathBuf> {
-    find_program_in(program, craft_anything_platform::which::search_path()).or_else(|| desktop_cli(program, local_app_data().as_deref()))
+    find_program_in(program, craft_anything_platform::which::search_path()).or_else(|| local_desktop_cli(program))
+}
+
+/// Off-PATH desktop CLI locations stay here, not in backend tests or command selection.
+fn local_desktop_cli(program: &str) -> Option<PathBuf> {
+    let windows = desktop_cli(program, local_app_data().as_deref());
+    #[cfg(target_os = "macos")]
+    if windows.is_none() && program == "codex" {
+        let roots = dirs::home_dir().map(|home| home.join("Applications")).into_iter().chain([PathBuf::from("/Applications")]);
+        return macos_codex_in(roots);
+    }
+    windows
+}
+
+/// Dock launches do not inherit a terminal's PATH. Look only in known app-bundle locations,
+/// never run an app's GUI executable as a CLI, and leave an explicit/PATH installation first.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn macos_codex_in(roots: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    const INSIDE: &[&str] = &[
+        "ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        "ChatGPT.app/Contents/Resources/codex",
+        "Codex.app/Contents/Resources/codex",
+        "Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    ];
+    roots.into_iter().flat_map(|root| INSIDE.iter().map(move |inside| root.join(inside))).find(|path| {
+        let Ok(meta) = std::fs::metadata(path) else { return false };
+        if !meta.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            meta.permissions().mode() & 0o111 != 0
+        }
+    })
 }
 
 /// Agents whose Windows desktop app keeps the command-line program in its own folder, under
@@ -336,17 +378,22 @@ fn access_for(builder: bool, deep: bool, question: bool) -> Access {
     }
 }
 
-/// True when `program`'s help mentions every required flag (10 s limit, stdin closed).
-pub fn verify_flags(program: &str, help_args: &[&str], needed: &[&str]) -> bool {
+/// Whether `program`'s help mentions every required flag (10 s limit, stdin closed); `None` when
+/// the help couldn't be read (the program is missing, or too slow).
+pub fn verify_flags(program: &str, help_args: &[&str], needed: &[&str]) -> Option<bool> {
     if needed.is_empty() {
-        return true;
+        return Some(true);
     }
     match Process::new(program).args(help_args).timeout(Duration::from_secs(10)).stdout_cap(256 * 1024).run() {
         Ok(out) => {
             let text = format!("{}{}", out.stdout_text(), out.stderr_text());
-            needed.iter().all(|f| text.contains(f))
+            if needed.iter().all(|f| text.contains(f)) {
+                return Some(true);
+            }
+            // A failed probe that printed no usage (a broken launcher) says nothing about the version.
+            (out.code == Some(0) || text.to_ascii_lowercase().contains("usage")).then_some(false)
         }
-        Err(_) => false,
+        Err(_) => None,
     }
 }
 
@@ -860,6 +907,13 @@ fn nothing_done(backend: &str) -> AgentEvent {
     AgentEvent::TurnDone { backend: backend.to_string(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false }
 }
 
+/// How long a turn's process may keep running after its stream already said the turn was done
+/// (Claude Code's final `result` line, or another adapter's equivalent) before we stop waiting on
+/// it. The turn is over once the stream says so; a shutdown hook or cleanup step that hangs after
+/// that must not leave the build "Pausing" for as long as the idle timeout allows (hours, for a
+/// builder turn, since a hung hook alone never touches stdout again to reset it).
+const RESULT_GRACE: Duration = Duration::from_secs(5);
+
 /// One message as one run of the agent's program (here or over SSH), its events sent on `tx`
 /// as they come. Returns the `TurnDone` that ends the turn, whatever happened, for the caller to
 /// send once the conversation can take the next message. The session it reports is kept for the
@@ -908,13 +962,19 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     }
     let (help, needed) = adapter.required_flags();
     if !needed.is_empty() {
-        let ok = match remote {
-            Some(_) => true, // can't cheaply check a remote CLI; its errors are streamed back
+        let checked = match remote {
+            Some(_) => Some(true), // can't cheaply check a remote CLI; its errors are streamed back
             None => {
+                // Only a help with the flags is kept: anything else is checked again next turn, so
+                // a program updated in place is seen.
                 let mut v = verified.lock().unwrap_or_else(PoisonError::into_inner);
-                *v.get_or_insert_with(|| verify_flags(&program, help, needed))
+                if *v != Some(true) {
+                    *v = verify_flags(&program, help, needed);
+                }
+                *v
             }
         };
+        let ok = checked == Some(true);
         if !ok && adapter.plain_fallback() {
             let _ = tx.send(AgentEvent::Status {
                 text: format!("{program}'s help doesn't list {} here, so it runs with the plain adapter (prompt in, text out).", needed.join(" / ")),
@@ -924,11 +984,19 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
             // Forget it before retry chooses between the original request and a continuation.
             *session.lock().unwrap_or_else(PoisonError::into_inner) = None;
         } else if !ok {
+            // Only a help that was read and lacks the flags says which version this is (#1111).
+            if let Some((message, remediation)) = adapter.missing_flags_error().filter(|_| checked == Some(false)) {
+                let _ = tx.send(AgentEvent::Error { message: message.into(), remediation: Some(remediation.into()), log: None });
+                return nothing_done(&name);
+            }
             let _ = tx.send(AgentEvent::Status { text: format!("Couldn't confirm that {program} has {}; trying it anyway.", needed.join(" / ")) });
         }
     }
     let preamble = spec.preamble.clone().unwrap_or_else(|| crate::prompt::cli_preamble(spec.beginner));
-    let mcp = mcp_for(spec, remote.is_some());
+    let mut mcp = mcp_for(spec, remote.is_some());
+    if let Some(path) = remote.as_deref().and_then(adapters::remote_cli_path) {
+        mcp.command = path;
+    }
     let resume = session.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let text = if retry && adapter.resumes() && resume.is_some() { crate::failure::CONTINUE_TURN } else { text };
     let builder = spec.builder.is_some();
@@ -995,6 +1063,10 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     let failed_tools = Arc::new(AtomicBool::new(false));
     let (failed_tools2, failed_tools3) = (failed_tools.clone(), failed_tools.clone());
     let stop2 = stop.clone();
+    // Set once the stream's own terminal event is parsed, so the process is stopped `RESULT_GRACE`
+    // after rather than whenever it happens to exit (its own shutdown hooks aren't ours to wait on).
+    let result_seen: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+    let (result_seen2, result_seen3) = (result_seen.clone(), result_seen.clone());
     let mut proc = (if remote.is_none() { adapter.process(&prog) } else { Process::new(&prog) })
         .args(&argv)
         .timeout(Duration::from_secs(spec.options.timeout_secs.unwrap_or(turn)))
@@ -1004,7 +1076,10 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     }
     let mut proc = proc
         .stdout_cap(4 * 1024 * 1024)
-        .cancel_when(move || stop2.is_stopped() || failed_tools2.load(Ordering::SeqCst))
+        .cancel_when(move || {
+            let seen: Option<std::time::Instant> = *result_seen3.lock().unwrap_or_else(PoisonError::into_inner);
+            stop2.is_stopped() || failed_tools2.load(Ordering::SeqCst) || seen.is_some_and(|at| at.elapsed() >= RESULT_GRACE)
+        })
         .on_stdout_line(move |l| {
             if failed_tools3.load(Ordering::SeqCst) {
                 return;
@@ -1025,6 +1100,12 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
                 *failure2.lock().unwrap_or_else(PoisonError::into_inner) = Some(failed);
                 if failed.kind == FailureKind::ToolsUnavailable {
                     failed_tools3.store(true, Ordering::SeqCst);
+                }
+            }
+            if p.saw_result {
+                let mut seen = result_seen2.lock().unwrap_or_else(PoisonError::into_inner);
+                if seen.is_none() {
+                    *seen = Some(std::time::Instant::now());
                 }
             }
             for e in events {
@@ -1051,10 +1132,16 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     } else if let Some(id) = &p.session_id {
         *session.lock().unwrap_or_else(PoisonError::into_inner) = Some(id.clone());
     }
+    // The stream already said the turn was done (its terminal `result` line): whatever ended the
+    // process after that — our own cancellation once `RESULT_GRACE` passed, or a wall/idle
+    // deadline that happened to fire in that same window — isn't a failure of the turn itself. A
+    // genuine protocol failure (`p.failure`, handled above) and a deadline hit before any result
+    // was parsed still are: this never excuses a turn that didn't finish.
+    let ended_after_result = p.saw_result && matches!(result.as_ref().err().map(|e| e.code), Some(ErrorCode::Cancelled) | Some(ErrorCode::TimedOut));
     if p.failure.is_none() {
         let failed = match &result {
             Ok(out) if !out.success => Some(TurnFailure::process_exit(out.code)),
-            Err(e) if e.code != ErrorCode::Cancelled => Some(TurnFailure::from_process(e)),
+            Err(e) if e.code != ErrorCode::Cancelled && !ended_after_result => Some(TurnFailure::from_process(e)),
             _ => None,
         };
         *failure.lock().unwrap_or_else(PoisonError::into_inner) = failed;
@@ -1087,6 +1174,10 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
             }
         }
         Ok(_) => {}
+        // The stream already said the turn was done; it's that result, not this cancellation or
+        // deadline, that ends the turn. Whatever kept the process itself running past that (a
+        // shutdown hook, logging, cleanup) isn't ours to wait on or report as a stop or a failure.
+        Err(_) if ended_after_result => {}
         Err(e) if e.code == craft_anything_evidence::ErrorCode::Cancelled => {
             let _ = tx.send(AgentEvent::Status { text: "Stopped.".into() });
         }
@@ -1164,7 +1255,7 @@ impl FailureContext {
     /// Why this run failed, when it was ssh (or the remote computer) that says so.
     fn ssh_failure(&self, out: &craft_anything_platform::Output) -> Option<crate::ssh::SshFailure> {
         let host = self.host.as_deref()?;
-        crate::ssh::diagnose(host, &self.program, crate::ssh::is_git_server(host), out.code, &out.stderr_text())
+        crate::ssh::diagnose(host, &self.program, crate::ssh::is_git_server(host), out.code, &out.end_text())
     }
 
     /// Write the log. Returns its path, or what to tell the person when it couldn't be written.
@@ -1207,7 +1298,7 @@ impl FailureContext {
     fn exit_event(&self, agent: &str, out: &craft_anything_platform::Output) -> AgentEvent {
         let name = display_for(agent);
         let plain = craft_anything_platform::process::nonzero_error_with(&name, out, Some(&self.command));
-        let excerpt = craft_anything_platform::process::output_excerpt(&String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr }));
+        let excerpt = craft_anything_platform::process::output_excerpt(&out.end_text());
         let (message, mut remediation) = match self.ssh_failure(out) {
             Some(f) => {
                 let host = self.host.as_deref().unwrap_or_default();
@@ -1318,6 +1409,8 @@ mod tests {
         assert_eq!(replaced_program(&BackendOptions::default(), "codex"), None, "nothing saved");
         let bare = BackendOptions { command: Some("claude.exe".into()), ..Default::default() };
         assert_eq!(replaced_program(&bare, "claude"), None, "a bare name found as the same agent");
+        let folder = new.parent().unwrap();
+        assert_eq!(replaced_program(&chosen(folder), &new.display().to_string()), None, "a saved folder that's there isn't gone");
         assert_eq!(program_of(&config(Some("box")), &chosen(&gone)).unwrap(), gone.display().to_string(), "another computer's path isn't checked here");
         assert_eq!(program_of(&config(None), &BackendOptions::default()).unwrap(), "codex", "nothing chosen: the usual name");
         // #467: a saved app bundle is never started; the usual name is looked up instead.
@@ -1590,6 +1683,77 @@ mod tests {
         assert!(adapter.mcp_env(&mcp).unwrap().is_some());
     }
 
+    /// Reject non-executable candidates and prefer the user's application installation.
+    #[cfg(unix)]
+    #[test]
+    fn macos_bundled_codex_needs_an_executable_and_respects_application_root_order() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let user = d.path().join("User Applications");
+        let system = d.path().join("Applications");
+        let relative = "ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
+        let user_cli = user.join(relative);
+        let system_cli = system.join("Codex.app/Contents/Resources/codex");
+        assert!(macos_codex_in([user.clone(), system.clone()]).is_none());
+        std::fs::create_dir_all(user_cli.parent().unwrap()).unwrap();
+        std::fs::write(&user_cli, b"not executable").unwrap();
+        std::fs::set_permissions(&user_cli, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(macos_codex_in([user.clone()]).is_none());
+        std::fs::create_dir_all(system_cli.parent().unwrap()).unwrap();
+        std::fs::write(&system_cli, b"stand-in").unwrap();
+        std::fs::set_permissions(&system_cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(macos_codex_in([user.clone(), system.clone()]), Some(system_cli));
+        std::fs::set_permissions(&user_cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(macos_codex_in([user, system]), Some(user_cli));
+    }
+
+    /// Every supported bundle accepts its CLI, never its GUI or a directory at the CLI path.
+    #[cfg(unix)]
+    #[test]
+    fn every_supported_macos_codex_bundle_layout_is_found_without_the_gui() {
+        use std::os::unix::fs::PermissionsExt;
+        for relative in [
+            "ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            "ChatGPT.app/Contents/Resources/codex",
+            "Codex.app/Contents/Resources/codex",
+            "Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            let cli = d.path().join(relative);
+            std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+            // A directory and an app GUI executable are never CLI candidates.
+            std::fs::create_dir_all(&cli).unwrap();
+            assert!(macos_codex_in([d.path().into()]).is_none());
+            std::fs::remove_dir(&cli).unwrap();
+            let gui = d.path().join("ChatGPT.app/Contents/MacOS/ChatGPT");
+            std::fs::create_dir_all(gui.parent().unwrap()).unwrap();
+            std::fs::write(&gui, b"stand-in GUI, never run").unwrap();
+            std::fs::set_permissions(&gui, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(macos_codex_in([d.path().into()]).is_none());
+            std::fs::write(&cli, b"stand-in CLI, never run").unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(macos_codex_in([d.path().into()]), Some(cli));
+        }
+    }
+
+    /// Saved usual names share desktop lookup for every agent, while SSH names remain remote.
+    #[test]
+    fn saved_bare_agent_names_share_the_usual_lookup() {
+        let empty = std::env::join_paths(std::iter::empty::<&Path>()).ok();
+        for (model, program, _) in KNOWN {
+            let mut config =
+                BackendConfig { name: "Agent test".into(), kind: BackendKind::AgentCli, model: (*model).into(), base_url: None, ssh_host: None, enabled: true };
+            let options = BackendOptions { command: Some((*program).into()), ..Default::default() };
+            assert_eq!(
+                program_in(&config, &options, empty.clone()).unwrap(),
+                program_in(&config, &BackendOptions::default(), empty.clone()).unwrap(),
+                "{model}"
+            );
+            config.ssh_host = Some("test-host".into());
+            assert_eq!(program_in(&config, &options, empty.clone()).unwrap(), *program, "SSH never resolves a local desktop CLI");
+        }
+    }
+
     /// #1060: OpenCode's desktop app keeps its CLI in its own folder, as `opencode-cli.exe`.
     #[test]
     fn a_cli_inside_its_desktop_app_is_found() {
@@ -1765,6 +1929,8 @@ mod tests {
             let tools = &builder[builder_pos + 1];
             assert!(tools.split(',').any(|tool| tool == "Bash"), "{access:?}: {tools}");
             assert!(tools.split(',').any(|tool| tool == "Write"), "{access:?}: {tools}");
+            // #1105: a Deep builder can start subagents; Clean room keeps them out.
+            assert_eq!(tools.split(',').any(|tool| tool == "Agent"), access == Access::Build, "{access:?}: {tools}");
         }
         assert_eq!(a[pos("--resume") + 1], "sess-1");
         assert_eq!(a[pos("--allowedTools") + 1], "mcp__craft-anything__*");
@@ -1904,8 +2070,24 @@ mod tests {
             success: false,
             stdout: Vec::new(),
             stderr: stderr.as_bytes().to_vec(),
+            stdout_tail: Vec::new(),
+            stderr_tail: Vec::new(),
             stdout_truncated: false,
             stderr_truncated: false,
+            duration: Duration::from_millis(400),
+        }
+    }
+
+    fn failed_with_tail(code: i32, head: &str, tail: &str) -> craft_anything_platform::Output {
+        craft_anything_platform::Output {
+            code: Some(code),
+            success: false,
+            stdout: Vec::new(),
+            stderr: head.as_bytes().to_vec(),
+            stdout_tail: Vec::new(),
+            stderr_tail: tail.as_bytes().to_vec(),
+            stdout_truncated: false,
+            stderr_truncated: true,
             duration: Duration::from_millis(400),
         }
     }
@@ -1938,6 +2120,17 @@ mod tests {
             assert!(text.contains(part), "{part} is missing from:\n{text}");
         }
         assert!(!text.contains("private plans"), "the message stays out of the log:\n{text}");
+    }
+
+    /// A truncated SSH failure is diagnosed and quoted from its end, not its kept head.
+    #[test]
+    fn a_truncated_ssh_failure_is_read_from_its_end() {
+        let ev = context(Some("github.com"), None)
+            .exit_event("claude-code", &failed_with_tail(255, "warning: lots of noise\n", "exec request failed on channel 0\n"));
+        let AgentEvent::Error { message, remediation, .. } = ev else { panic!("not an error") };
+        assert!(message.contains("github.com is a git server"), "{message}");
+        let help = remediation.unwrap();
+        assert!(help.contains("exec request failed on channel 0"), "{help}");
     }
 
     #[test]
@@ -2222,6 +2415,7 @@ mod tests {
         assert!(adapter_for("claude-code").handoff(&saved, 10_000).is_some() && adapter_for("codex").handoff(&saved, 10_000).is_none());
     }
 
+    /// Native stream events preserve text, tool results and usage for both adapters.
     #[test]
     fn parses_codex_and_gemini_streams() {
         let mut p = StreamParser::new(adapter_for("codex"));
@@ -2239,6 +2433,8 @@ mod tests {
         assert!(matches!(&ev[1], AgentEvent::ToolFinished { ok: true, .. }));
         assert!(matches!(&ev[2], AgentEvent::TextDelta { text } if text.starts_with("It lists")));
         assert!(p.saw_result && p.output_tokens == 4);
+        let auth = p.line(&json!({"type":"turn.failed","error":{"message":"authentication expired"}}).to_string());
+        assert!(auth.iter().any(|event| matches!(event, AgentEvent::Error { remediation: Some(fix), .. } if fix.contains("Sign in with ChatGPT"))));
         let mut g = StreamParser::new(adapter_for("gemini-cli"));
         let ev: Vec<_> = [
             json!({"type":"message","role":"assistant","content":"Hi","delta":true}),
@@ -2250,6 +2446,52 @@ mod tests {
         .collect();
         assert!(matches!(&ev[1], AgentEvent::ToolStarted { tool, .. } if tool == "core_targets_list"));
         assert!(matches!(&ev[2], AgentEvent::ToolFinished { ok: false, .. }));
+    }
+
+    /// CodeRabbit review on #1426: `saw_result` alone now decides whether a lingering process
+    /// counts as a finished turn (`run_cli`'s `RESULT_GRACE`), so a `result` event that itself
+    /// reports failure must still fail the turn, not quietly succeed. Documented stream-json only
+    /// ever ends a run with `result` on success (a failure is its own `error` event instead), but
+    /// this is defensive: if a non-"success" status is ever sent on `result`, it must not be
+    /// silently swallowed the way an unrecognised field would be.
+    #[test]
+    fn a_gemini_result_that_reports_failure_still_fails_the_turn() {
+        let mut p = StreamParser::new(adapter_for("gemini-cli"));
+        let ev = p.line(&json!({"type":"result","status":"error","error":"the model refused the request"}).to_string());
+        assert!(p.saw_result, "a result line always marks the stream's turn as done");
+        assert!(ev.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("the model refused the request"))), "{ev:?}");
+        // An ordinary successful result still reports nothing extra.
+        let mut ok = StreamParser::new(adapter_for("gemini-cli"));
+        let ev = ok.line(&json!({"type":"result","status":"success","stats":{"input_tokens":1,"output_tokens":1}}).to_string());
+        assert!(ok.saw_result && ev.is_empty(), "{ev:?}");
+    }
+
+    /// Login-shell, tool and network failures are not evidence that the account needs sign-in.
+    #[test]
+    fn codex_sign_in_guidance_only_matches_authentication_failures() {
+        for kind in ["turn.failed", "error"] {
+            for (message, needs_login) in [
+                ("login required", true),
+                ("Authentication expired", true),
+                ("authentication failed", true),
+                ("authentication required", true),
+                ("Unauthorized", true),
+                ("not logged in", true),
+                ("token expired", true),
+                ("login shell failed", false),
+                ("authentication service unavailable", false),
+                ("tool execution failed", false),
+                ("network timeout", false),
+            ] {
+                let mut parser = StreamParser::new(adapter_for("codex"));
+                let events = parser.line(&json!({"type":kind,"error":{"message":message}}).to_string());
+                assert!(
+                    matches!(events.as_slice(), [AgentEvent::Error { remediation, message: shown, .. }]
+                    if remediation.is_some() == needs_login && shown == &format!("Codex: {message}")),
+                    "{kind}: {message}: {events:?}"
+                );
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -2584,6 +2826,95 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         }
     }
 
+    /// A fake `claude` that prints the turn's `result` line, then hangs well past it (standing in
+    /// for a shutdown hook or cleanup step that got stuck after Claude Code's own turn was done).
+    #[cfg(unix)]
+    fn hangs_after_its_result(dir: &std::path::Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let program = dir.join("claude");
+        let reply = r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"s1"}"#;
+        // `exec`: sleep replaces the shell rather than running as its child, so the group kill
+        // that ends this stand-in doesn't depend on also reaching a grandchild process.
+        std::fs::write(&program, format!("#!/bin/sh\necho '{reply}'\nexec sleep 20\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        program
+    }
+
+    #[cfg(windows)]
+    fn hangs_after_its_result(dir: &std::path::Path) -> PathBuf {
+        let program = dir.join("claude.cmd");
+        let reply = r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"s1"}"#;
+        std::fs::write(&program, format!("@echo off\r\necho {reply}\r\nping -n 21 127.0.0.1 >nul\r\n")).unwrap();
+        program
+    }
+
+    /// A turn whose stream already said it was done (the `result` line) must not stay "Building"
+    /// for as long as the process takes to actually exit: a shutdown hook or cleanup step that
+    /// hangs after that line isn't ours to wait on. Without `RESULT_GRACE`, this test would see no
+    /// `TurnDone` until the fake CLI's 20 s sleep ends; with it, `TurnDone` arrives within seconds.
+    #[test]
+    fn a_turn_already_said_done_ends_without_waiting_for_the_process_to_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = hangs_after_its_result(dir.path());
+        let config =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+        let mut spec = CliSpec::new(config, options, false, None);
+        // A short, single-line preamble: on Windows, a `.cmd` stand-in can't take the real
+        // multi-line default (a batch file's arguments can't carry a newline), which is beside
+        // the point of this test either way.
+        spec.preamble = Some("P:".into());
+        let mut c = CliConversation::new(spec);
+        c.send("go");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut events = Vec::new();
+        loop {
+            let got = c.poll();
+            let done = got.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. }));
+            events.extend(got);
+            if done {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no TurnDone within {RESULT_GRACE:?} of the result line: {events:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let bad = |e: &AgentEvent| matches!(e, AgentEvent::Error { .. }) || matches!(e, AgentEvent::Status { text } if text == "Stopped.");
+        assert!(!events.iter().any(bad), "{events:?}");
+    }
+
+    /// PR #1426 review: a wall deadline shorter than `RESULT_GRACE` can fire before our own grace
+    /// period does, even though the stream already parsed the terminal result. That race must
+    /// still count as the turn completing, not as a retryable failure (a builder could otherwise
+    /// retry a turn that had already finished).
+    #[test]
+    fn a_wall_deadline_during_result_grace_still_counts_as_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = hangs_after_its_result(dir.path());
+        let config =
+            BackendConfig { name: "Claude".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+        // Shorter than RESULT_GRACE: the result is parsed almost at once, but the process (asleep
+        // for 20 s) is still alive when this deadline, not our own grace period, ends the run.
+        let options = BackendOptions { command: Some(program.display().to_string()), timeout_secs: Some(2), ..Default::default() };
+        let mut spec = CliSpec::new(config, options, false, None);
+        spec.preamble = Some("P:".into());
+        let mut c = CliConversation::new(spec);
+        c.send("go");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut events = Vec::new();
+        loop {
+            let got = c.poll();
+            let done = got.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. }));
+            events.extend(got);
+            if done {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no TurnDone: {events:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let bad = |e: &AgentEvent| matches!(e, AgentEvent::Error { .. }) || matches!(e, AgentEvent::Status { text } if text == "Stopped.");
+        assert!(!events.iter().any(bad), "a result parsed before the wall deadline must not be reported as a failure: {events:?}");
+    }
+
     /// #91: a Mac app with no CLI beside it reached Claude Code, which stopped with a stack trace.
     #[test]
     fn a_missing_or_broken_helper_is_said_plainly() {
@@ -2690,6 +3021,105 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         }
         let said = |w: &str| all.iter().any(|e| matches!(e, AgentEvent::Status { text } if text.contains(w)));
         assert!(said("trying it anyway") && !said("plain adapter"), "{all:?}");
+    }
+
+    /// #1111: OpenCode 1.x's `run --help` lists no `--standalone` and rejects it, so the turn is
+    /// stopped with the fix before the program runs (it would print its usage and fail).
+    #[cfg(unix)]
+    #[test]
+    fn opencode_1_is_refused_before_it_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("opencode");
+        let ran = dir.path().join("ran");
+        // OpenCode 1.x's help, and a run of it that leaves a mark so the test sees it happened.
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = run ] && [ \"$2\" = --help ]; then printf '%s\\n' '--format --title --auto'; exit 0; fi\ntouch '{}'\nexit 1\n",
+            ran.display()
+        );
+        std::fs::write(&program, &script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config =
+            BackendConfig { name: "OpenCode".into(), kind: BackendKind::AgentCli, model: "opencode".into(), base_url: None, ssh_host: None, enabled: true };
+        let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+        let mut c = CliConversation::new(CliSpec::new(config, options, false, None));
+        c.send("What does this program do?");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut all = Vec::new();
+        while std::time::Instant::now() < deadline && !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+            all.extend(c.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            all.iter().any(|e| matches!(
+                e,
+                AgentEvent::Error { message, remediation: Some(fix), .. }
+                    if message.contains("OpenCode 1.x") && fix.contains("@opencode/cli")
+            )),
+            "{all:?}"
+        );
+        let said = |w: &str| all.iter().any(|e| matches!(e, AgentEvent::Status { text } if text.contains(w)));
+        assert!(!said("trying it anyway"), "{all:?}");
+        assert!(!ran.exists(), "OpenCode 1.x ran anyway: {all:?}");
+
+        // Updated in place to OpenCode 2: the next turn checks again and runs it.
+        let v2 = dir.path().join("opencode-v2");
+        std::fs::write(&v2, script.replace("--format --title --auto", "--format --standalone")).unwrap();
+        std::fs::set_permissions(&v2, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&v2, &program).unwrap();
+        let all = one_turn(&mut c, "And now?");
+        assert!(!all.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("1.x"))), "{all:?}");
+        assert!(ran.exists(), "OpenCode 2 didn't run: {all:?}");
+    }
+
+    /// A help probe that fails without printing usage (a broken launcher) isn't taken for
+    /// OpenCode 1.x: the run goes on and shows its own failure.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_help_probe_is_not_called_version_1() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("opencode");
+        std::fs::write(&program, "#!/bin/sh\necho 'env: node: No such file or directory' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config =
+            BackendConfig { name: "OpenCode".into(), kind: BackendKind::AgentCli, model: "opencode".into(), base_url: None, ssh_host: None, enabled: true };
+        let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+        let mut c = CliConversation::new(CliSpec::new(config, options, false, None));
+        let all = one_turn(&mut c, "What does this program do?");
+        assert!(!all.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("1.x"))), "{all:?}");
+        assert!(all.iter().any(|e| matches!(e, AgentEvent::Status { text } if text.contains("trying it anyway"))), "{all:?}");
+    }
+
+    /// Sends `text` and collects the turn's events up to its end.
+    fn one_turn(c: &mut CliConversation, text: &str) -> Vec<AgentEvent> {
+        c.send(text);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut all = Vec::new();
+        while std::time::Instant::now() < deadline && !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+            all.extend(c.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        all
+    }
+
+    /// A help that couldn't be read (here, no program) isn't taken for OpenCode 1.x: the run goes
+    /// on to say the program is missing.
+    #[test]
+    fn a_missing_opencode_is_not_called_version_1() {
+        let config =
+            BackendConfig { name: "OpenCode".into(), kind: BackendKind::AgentCli, model: "opencode".into(), base_url: None, ssh_host: None, enabled: true };
+        let options = BackendOptions { command: Some("no-such-opencode-xyz".into()), ..Default::default() };
+        let mut c = CliConversation::new(CliSpec::new(config, options, false, None));
+        c.send("What does this program do?");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut all = Vec::new();
+        while std::time::Instant::now() < deadline && !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+            all.extend(c.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(all.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("isn't installed"))), "{all:?}");
+        assert!(!all.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("1.x"))), "{all:?}");
     }
 
     /// A fork's own agent: JSON lines of `{"say": …}`, registered under its id.
