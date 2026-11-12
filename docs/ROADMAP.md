@@ -1476,6 +1476,9 @@ Gaps found while using the app for real projects.
 - [x] An engine download the server can't answer right now (a 5xx, 429) says to try again later,
       not "update the pinned URL", which nobody installing an engine can do (#1193)
       — claimed: justinjohn0306, branch bugfix/r2.9-download-server-errors
+- [ ] Keep shared engine downloads on HTTPS across every redirect, with a real TLS regression
+      and no signed redirect links in refusal diagnostics
+      — claimed: Butler12345, branch bugfix/r2.9-https-engine-downloads
 - [x] Settings → AI: a card for an AI found on this computer wraps its description beside its Add
       button; the line didn't wrap and ran on under the button
       — claimed: jgt87, branch bugfix/r2.9-detected-cards-wrap — PR #1235
